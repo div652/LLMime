@@ -24,7 +24,7 @@ Description=LLM-to-Notion Universal Clipboard Bridge
 After=graphical-session.target
 
 [Service]
-ExecStart=$DIR/dist/daemon
+ExecStart="$DIR/dist/daemon"
 Restart=always
 RestartSec=5
 Environment=DISPLAY=:0
