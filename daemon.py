@@ -169,16 +169,33 @@ class MarkdownToSlateCompiler:
             code_el = node.find('code')
             text = code_el.text if code_el is not None else node.text
             if not text: text = ""
+            
+            lang = ""
+            if code_el is not None and 'class' in code_el.attrib:
+                cls = code_el.attrib['class']
+                if cls.startswith('language-'):
+                    lang = cls[len('language-'):]
+                    
+            if text.endswith('\n'):
+                text = text[:-1]
             lines = text.split('\n')
-            blocks = []
+            
+            line_nodes = []
             for line in lines:
-                blocks.append({
-                    "type": "unstyled",
+                line_nodes.append({
+                    "type": "code-block",
                     "id": gen_id(),
-                    "key": gen_key(),
-                    "children": [{"text": line, "code": True, "key": gen_key()}]
+                    "language": lang,
+                    "children": [{"text": line, "key": gen_key()}],
+                    "key": gen_key()
                 })
-            return blocks
+            return [{
+                "type": "code-blocks",
+                "id": gen_id(),
+                "wrapCode": False,
+                "children": line_nodes,
+                "key": gen_key()
+            }]
         else:
             children = self.parse_inline(node)
             if not children:
@@ -278,6 +295,18 @@ class MarkdownToSlateCompiler:
         if node["type"] == "inline-formula":
             safe_math = node["formula"].replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
             return f'<inline-formula id="{node["id"]}" formula="{safe_math}" />'
+            
+        if node["type"] == "code-blocks":
+            lang = ""
+            if node.get("children") and "language" in node["children"][0]:
+                lang = node["children"][0]["language"]
+            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
+            return f'<code-block id="{node["id"]}" language="{lang}">{inner}</code-block>'
+            
+        if node["type"] == "code-block":
+            lang = node.get("language", "")
+            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
+            return f'<code-line id="{node["id"]}" language="{lang}">{inner}</code-line>'
             
         tag = tag_map.get(node["type"], "div")
         inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))

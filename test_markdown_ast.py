@@ -95,16 +95,33 @@ class MarkdownToSlateCompiler:
             code_el = node.find('code')
             text = code_el.text if code_el is not None else node.text
             if not text: text = ""
+            
+            lang = ""
+            if code_el is not None and 'class' in code_el.attrib:
+                cls = code_el.attrib['class']
+                if cls.startswith('language-'):
+                    lang = cls[len('language-'):]
+                    
+            if text.endswith('\n'):
+                text = text[:-1]
             lines = text.split('\n')
-            blocks = []
+            
+            line_nodes = []
             for line in lines:
-                blocks.append({
-                    "type": "unstyled",
+                line_nodes.append({
+                    "type": "code-block",
                     "id": gen_id(),
-                    "key": gen_key(),
-                    "children": [{"text": line, "code": True, "key": gen_key()}]
+                    "language": lang,
+                    "children": [{"text": line, "key": gen_key()}],
+                    "key": gen_key()
                 })
-            return blocks
+            return [{
+                "type": "code-blocks",
+                "id": gen_id(),
+                "wrapCode": False,
+                "children": line_nodes,
+                "key": gen_key()
+            }]
         else:
             children = self.parse_inline(node)
             if not children:
@@ -205,6 +222,18 @@ class MarkdownToSlateCompiler:
             safe_math = node["formula"].replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
             return f'<inline-formula id="{node["id"]}" formula="{safe_math}" />'
             
+        if node["type"] == "code-blocks":
+            lang = ""
+            if node.get("children") and "language" in node["children"][0]:
+                lang = node["children"][0]["language"]
+            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
+            return f'<code-block id="{node["id"]}" language="{lang}">{inner}</code-block>'
+            
+        if node["type"] == "code-block":
+            lang = node.get("language", "")
+            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
+            return f'<code-line id="{node["id"]}" language="{lang}">{inner}</code-line>'
+            
         tag = tag_map.get(node["type"], "div")
         inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
         if "id" in node:
@@ -216,14 +245,29 @@ c = MarkdownToSlateCompiler()
 test_text = """## The Mathematical Equation
 Let a training sample consist of a prompt sequence $X$ and a target response sequence $Y$:
 
-* **Prompt tokens:** $X = (x_1, x_2, \dots)$ of length $n$.
-* **Response tokens:** $Y = (y_1, y_2, \dots)$ of length $m$.
+* **Prompt tokens:** $X = (x_1, x_2, \\dots)$ of length $n$.
+* **Response tokens:** $Y = (y_1, y_2, \\dots)$ of length $m$.
 
 $$
-W = (w_1, w_2, \dots)
+W = (w_1, w_2, \\dots)
 $$
+
+Here is a Python code block:
+
+```python
+import torch
+import torch.nn as nn
+
+# 1. Define the network
+model = nn.Sequential(
+    nn.Linear(2, 4),  # Input 2, Hidden 4
+    nn.ReLU(),
+    nn.Linear(4, 1)   # Hidden 4, Output 1
+)
+```
 """
 ast = c.compile(test_text)
 print(json.dumps(ast, indent=2))
+print("\n=== SEMANTIC XML ===")
 for node in ast["fragment"]["children"]:
     print(c.ast_to_semantic_xml(node))
