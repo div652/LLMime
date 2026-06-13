@@ -1,42 +1,59 @@
 #!/bin/bash
 set -e
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-SERVICE_TEMPLATE="llm-bridge.service.template"
-SERVICE_DEST="$HOME/.config/systemd/user/llm-bridge.service"
+echo "=== LLMime v2 Build ==="
 
-echo "Activating virtual environment..."
-source "$DIR/venv/bin/activate"
+# Activate virtual environment
+source venv/bin/activate
+echo "✅ Virtual environment activated"
 
-echo "Installing pyinstaller..."
-pip install pyinstaller
+# Install Python dependencies
+pip install -r requirements.txt --quiet
+pip install pyinstaller --quiet
+echo "✅ Python dependencies installed"
 
-echo "Building standalone executable..."
-pyinstaller --onefile --noconsole daemon.py
+# Verify local KaTeX is available
+if [ ! -f "node_modules/.bin/katex" ]; then
+    echo "❌ Local KaTeX CLI not found. Install with: npm install katex"
+    exit 1
+fi
+echo "✅ Local KaTeX CLI found"
 
-echo "Creating systemd directory if it doesn't exist..."
-mkdir -p "$HOME/.config/systemd/user"
+# Build standalone executable
+echo "🔨 Building standalone binary..."
+pyinstaller -y --onefile --noconsole daemon.py
+echo "✅ Binary built at dist/daemon"
 
-echo "Generating exact systemd service file..."
-cat << EOF > "$SERVICE_DEST"
+# Create systemd service directory
+mkdir -p ~/.config/systemd/user
+
+# Generate systemd service file
+# IMPORTANT: ExecStart path MUST be quoted to handle spaces in path (v1 lesson)
+DAEMON_PATH="$(pwd)/dist/daemon"
+cat > ~/.config/systemd/user/llm-bridge.service << EOF
 [Unit]
-Description=LLM-to-Notion Universal Clipboard Bridge
-After=graphical-session.target
+Description=LLMime Clipboard Bridge
 
 [Service]
-ExecStart="$DIR/dist/daemon"
+ExecStart="${DAEMON_PATH}"
 Restart=always
 RestartSec=5
 Environment=DISPLAY=:0
+Environment=HOME=${HOME}
+Environment=PATH=${HOME}/.nvm/versions/node/$(node -v 2>/dev/null || echo "v0")/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin
 
 [Install]
 WantedBy=default.target
 EOF
 
-echo "Reloading systemd user daemon..."
-systemctl --user daemon-reload
-echo "Enabling and starting llm-bridge service..."
-# systemctl --user enable --now llm-bridge.service
+echo "✅ Systemd service file generated"
 
-echo "Build complete. The binary is at dist/daemon"
-echo "To start the background service, run: systemctl --user start llm-bridge.service"
+# Reload and restart
+systemctl --user daemon-reload
+systemctl --user enable --now llm-bridge.service
+echo "✅ Service started"
+
+echo ""
+echo "=== Build Complete ==="
+echo "Binary: dist/daemon"
+echo "Service: systemctl --user status llm-bridge.service"

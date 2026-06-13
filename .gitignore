@@ -1,0 +1,7 @@
+venv/
+build/
+dist/
+node_modules/
+pyinstaller_log.txt
+__pycache__/
+*.pyc
