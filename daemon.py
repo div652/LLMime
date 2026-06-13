@@ -4,8 +4,35 @@ import re
 import uuid
 import struct
 import json
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QSystemTrayIcon, QMenu
 from PyQt6.QtCore import QMimeData, Qt, QTimer, QPropertyAnimation
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
+
+def create_tray_icon():
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    
+    # Draw a rounded rectangle for clipboard backing (sleek indigo)
+    painter.setBrush(QColor("#4F46E5"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRoundedRect(4, 4, 56, 56, 12, 12)
+    
+    # Draw a small metal clip at the top
+    painter.setBrush(QColor("#E0E7FF"))
+    painter.drawRoundedRect(20, 2, 24, 10, 3, 3)
+    
+    # Draw a bold white letter "L" representing LLMime
+    painter.setPen(QColor("#FFFFFF"))
+    font = QFont("sans-serif", 28, QFont.Weight.Bold)
+    painter.setFont(font)
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "L")
+    
+    painter.end()
+    return QIcon(pixmap)
+
 
 def gen_id():
     return uuid.uuid4().hex[:14]
@@ -275,7 +302,7 @@ class Toast(QWidget):
         try:
             screen = QApplication.primaryScreen().availableGeometry()
             self.adjustSize()
-            self.move((screen.width() - self.width()) // 2, screen.height() - 150)
+            self.move(screen.width() - self.width() - 24, screen.height() - self.height() - 100)
         except Exception:
             pass
         self.show()
@@ -298,6 +325,21 @@ class ClipboardBridge:
         self.is_internal_update = False
         self._toast = None
         self.clipboard.dataChanged.connect(self.on_clipboard_change)
+        
+        # System Tray Icon setup
+        try:
+            self.tray_icon = QSystemTrayIcon(create_tray_icon(), self.app)
+            self.tray_menu = QMenu()
+            
+            quit_action = QAction("Quit LLMime", self.app)
+            quit_action.triggered.connect(self.app.quit)
+            self.tray_menu.addAction(quit_action)
+            
+            self.tray_icon.setContextMenu(self.tray_menu)
+            self.tray_icon.setToolTip("LLMime - Slite Clipboard Bridge")
+            self.tray_icon.show()
+        except Exception as e:
+            print(f"Warning: Could not create system tray icon: {e}", file=sys.stderr)
     
     def on_clipboard_change(self):
         if self.is_internal_update:

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== LLMime v2 Build ==="
+echo "=== LLMime v3 Build ==="
 
 # Activate virtual environment
 source venv/bin/activate
@@ -12,48 +12,50 @@ pip install -r requirements.txt --quiet
 pip install pyinstaller --quiet
 echo "✅ Python dependencies installed"
 
-# Verify local KaTeX is available
-if [ ! -f "node_modules/.bin/katex" ]; then
-    echo "❌ Local KaTeX CLI not found. Install with: npm install katex"
-    exit 1
-fi
-echo "✅ Local KaTeX CLI found"
-
 # Build standalone executable
 echo "🔨 Building standalone binary..."
 pyinstaller -y --onefile --noconsole daemon.py
 echo "✅ Binary built at dist/daemon"
 
-# Create systemd service directory
-mkdir -p ~/.config/systemd/user
+# Clean up old systemd service if present
+echo "🧹 Cleaning up old systemd service..."
+systemctl --user stop llm-bridge.service 2>/dev/null || true
+systemctl --user disable llm-bridge.service 2>/dev/null || true
+rm -f ~/.config/systemd/user/llm-bridge.service
+systemctl --user daemon-reload || true
+echo "✅ Old systemd service removed"
 
-# Generate systemd service file
-# IMPORTANT: ExecStart path MUST be quoted to handle spaces in path (v1 lesson)
+# Create launcher and autostart directories
+mkdir -p ~/.local/share/applications
+mkdir -p ~/.config/autostart
+
 DAEMON_PATH="$(pwd)/dist/daemon"
-cat > ~/.config/systemd/user/llm-bridge.service << EOF
-[Unit]
-Description=LLMime Clipboard Bridge
 
-[Service]
-ExecStart="${DAEMON_PATH}"
-Restart=always
-RestartSec=5
-Environment=DISPLAY=:0
-Environment=HOME=${HOME}
-Environment=PATH=${HOME}/.nvm/versions/node/$(node -v 2>/dev/null || echo "v0")/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin:${HOME}/.npm-global/bin
+# Generate desktop file
+DESKTOP_FILE="[Desktop Entry]
+Type=Application
+Name=LLMime Clipboard Bridge
+Comment=LLMime Clipboard Bridge for native Slite AST injection
+Exec=\"${DAEMON_PATH}\"
+Icon=preferences-desktop-keyboard
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+"
 
-[Install]
-WantedBy=default.target
-EOF
+echo "${DESKTOP_FILE}" > ~/.local/share/applications/llmime.desktop
+echo "${DESKTOP_FILE}" > ~/.config/autostart/llmime.desktop
 
-echo "✅ Systemd service file generated"
+echo "✅ Desktop launcher registered: ~/.local/share/applications/llmime.desktop"
+echo "✅ Autostart launcher registered: ~/.config/autostart/llmime.desktop"
 
-# Reload and restart
-systemctl --user daemon-reload
-systemctl --user enable --now llm-bridge.service
-echo "✅ Service started"
-
+# Prompt user to restart the daemon
 echo ""
 echo "=== Build Complete ==="
-echo "Binary: dist/daemon"
-echo "Service: systemctl --user status llm-bridge.service"
+echo "You can search for 'LLMime Clipboard Bridge' in your Application Menu to start it,"
+echo "or it will start automatically on your next login."
+echo ""
+echo "Starting the daemon now..."
+# Launch in the background
+"${DAEMON_PATH}" &
+echo "✅ Daemon started in background (PID: $!)"
