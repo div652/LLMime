@@ -199,7 +199,9 @@ The original assumption (Limitation 4, v3) was that Slite tables would be a Slat
 * **Resolution — two paths, by content shape:**
   * **Single-table copy** (the entire selection is one Markdown table): `compiler._build_table_database` generates a native Slite **database** payload — `application/x-slite-database-fragment` (+ `-field` anchor) with one `text` column per Markdown column, one record per body row, and a `database-table-cell` per cell in `content` (reusing the inline pipeline, so `$math$` becomes `inline-formula` inside cells). Column 0 is treated as the primary "Title" column (no `record.fields` entry, content only), matching observed behaviour.
   * **Mixed content** (heading/prose around a table): falls back to flattening the table into valid `unstyled` paragraph rows (cells joined by `|`, header bold, inline math preserved), because a database can't be embedded inline.
-* **Still UNVERIFIED against a live Slite paste** (no Slite on the build machine). Open questions: whether `createdBy`/`updatedBy` are required (currently omitted unless `compiler.MarkdownToSlateCompiler.user_id` is set — the daemon could learn the id from a real Slite copy and set it), whether the millisecond `createdAt`/`updatedAt` we generate are accepted, and whether `database-field` is mandatory. If a paste fails, capture a fresh dump of a minimal Slite table and compare.
+* **VERIFIED against a live Slite paste** (Windows, Slite desktop): a single-table copy pastes as a real, editable Slite table/database with inline math intact. Confirmed findings:
+  * `createdBy`/`updatedBy` are **not required** — they were omitted (`user_id = None`) and Slite regenerated ownership on paste. So the `user_id` capture idea is unnecessary for tables.
+  * The millisecond `createdAt`/`updatedAt` we generate are accepted, and including both `database-fragment` and `database-field` works.
 
 ---
 
@@ -208,17 +210,16 @@ The original assumption (Limitation 4, v3) was that Slite tables would be a Slat
 1b. **Slite-on-Windows paste unverified:** The Windows payload, format name, and end-to-end auto-conversion are verified (Section 6.4), but an actual paste into the Slite Windows desktop app has not been confirmed on the build machine (Slite was not installed). Run `dump_clipboard_win.py` against a real Slite copy to validate the schema if a paste ever misbehaves.
 2. **Notion Incompatibility:** As detailed in Section 2, Notion does not support simple HTML or SlateJS AST clipboard injection.
 3. **Partial Delimiters:** If a user copies text with a single open `$$` but no matching closing pair, it will either fail to match or parse incorrectly.
-4. **Tables render as flattened paragraphs, not native tables.** Slite tables are databases, not inline nodes, and a database is a standalone payload that cannot be embedded inline with other blocks (Section 7). So a Markdown table is currently flattened to `unstyled` paragraph rows (cells joined by `|`, header bold, inline math preserved) — readable and safe, but not an editable Slite table. Native tables for the *single-table-only* case are tracked in Future Task 1.
+4. **Mixed-content tables flatten to paragraphs.** A *single-table* copy now pastes as a native, editable Slite database table (Section 7, verified). But because a Slite database is a standalone payload that can't be embedded inline with other blocks, a table copied *together with* surrounding headings/prose is flattened to `unstyled` paragraph rows (cells joined by `|`, header bold, inline math preserved) — readable and safe, but not an editable table. Copy the table on its own to get a native table.
 
 ---
 
 ### 5. Future Expansion & Next Steps
 If you or another developer want to improve this project further, consider these tasks:
 
-#### Task 1: Verify native database tables against a live Slite paste
-* **Status:** Implemented for single-table copies (`compiler._build_table_database`, Section 7). Mixed content uses the flattened fallback. **Not yet confirmed by an actual paste into Slite.**
-* **To verify:** copy *only* a Markdown table (no surrounding text) with the daemon running, then Ctrl+V into Slite. If it inserts a native database/table — done. If it fails or pastes plain text, capture a fresh dump of a minimal, freshly-created Slite table and diff it against our output to find the missing/wrong field (most likely `createdBy`/`updatedBy` ownership or a required column/record property).
-* **Likely follow-up:** teach the daemon to learn the Slite user id from a real Slite copy (the `createdBy` in `database-fragment`) and set `compiler.user_id`, so generated records carry valid ownership.
+#### Task 1: Native database tables — ✅ DONE (single-table copies)
+* Implemented in `compiler._build_table_database` and **verified** by a live Slite paste on Windows (Section 7). Single-table copies become real editable Slite tables with inline math; `createdBy`/`updatedBy` proved unnecessary.
+* **Remaining nice-to-have:** native tables for *mixed* content (heading + table + prose) are not possible inline because a database is a standalone payload — those still use the flattened-paragraph fallback. No known workaround within Slite's clipboard format.
 
 #### Task 2: Integrate Mermaid.js Diagrams
 * **Goal:** Automatically compile ` ```mermaid ` blocks into Slite's native Diagram AST components.
