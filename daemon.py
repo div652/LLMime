@@ -8,30 +8,42 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 # Shared verbatim with the Windows daemon. See compiler.py.
 from compiler import MarkdownToSlateCompiler, looks_like_markdown
 
-def create_tray_icon():
-    pixmap = QPixmap(64, 64)
+def render_icon_pixmap(size=64):
+    """Draw the LLMime icon (indigo clipboard + white "L") at the given size.
+
+    The single source of truth for the icon artwork, shared by the tray icon
+    (``create_tray_icon``) and the standalone ``.ico`` generator (``make_icon.py``)
+    so the Start-menu / taskbar icon matches the tray icon exactly. Coordinates
+    are authored on a 64px grid and scaled by ``size / 64``.
+    """
+    s = size / 64.0
+    pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
-    
+
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    
+
     # Draw a rounded rectangle for clipboard backing (sleek indigo)
     painter.setBrush(QColor("#4F46E5"))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawRoundedRect(4, 4, 56, 56, 12, 12)
-    
+    painter.drawRoundedRect(int(4 * s), int(4 * s), int(56 * s), int(56 * s), 12 * s, 12 * s)
+
     # Draw a small metal clip at the top
     painter.setBrush(QColor("#E0E7FF"))
-    painter.drawRoundedRect(20, 2, 24, 10, 3, 3)
-    
+    painter.drawRoundedRect(int(20 * s), int(2 * s), int(24 * s), int(10 * s), 3 * s, 3 * s)
+
     # Draw a bold white letter "L" representing LLMime
     painter.setPen(QColor("#FFFFFF"))
-    font = QFont("sans-serif", 28, QFont.Weight.Bold)
+    font = QFont("sans-serif", max(1, int(28 * s)), QFont.Weight.Bold)
     painter.setFont(font)
     painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "L")
-    
+
     painter.end()
-    return QIcon(pixmap)
+    return pixmap
+
+
+def create_tray_icon():
+    return QIcon(render_icon_pixmap(64))
 
 
 class Toast(QWidget):

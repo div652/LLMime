@@ -240,7 +240,9 @@ LLMime/
 ├── daemon.py                        # Linux daemon: clipboard bridge (X11) + tray icon + toast
 ├── daemon_windows.py                # Windows daemon: native Win32 clipboard write + tray icon + toast
 ├── build.sh                         # Linux build (PyInstaller) + register autostart desktop launchers
-├── build_windows.ps1                # Windows build (PyInstaller) + register Startup-folder autostart
+├── build_windows.ps1                # Windows build (PyInstaller) + Start Menu + Startup-folder shortcuts
+├── make_icon.py                     # Generate llmime.ico from the in-app tray artwork (shared renderer)
+├── llmime.ico                       # App icon (Start Menu / taskbar / exe) — matches the tray icon
 ├── requirements.txt                 # Linux dependencies: PyQt6, Markdown
 ├── requirements-windows.txt         # Windows dependencies: PyQt6, Markdown, pywin32
 ├── dump_electron.py                 # Debug utility (Linux/Qt): dump raw clipboard MIME formats

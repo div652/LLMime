@@ -24,28 +24,48 @@ Write-Host "OK Virtual environment ready"
 & $venvPy -m pip install --quiet pyinstaller
 Write-Host "OK Python dependencies installed"
 
-# 4. Build the standalone windowed executable.
-#    --noconsole: no console window.  compiler.py and daemon.py are pulled in
-#    automatically because daemon_windows.py imports them.
+# 4. Generate the app icon from the in-app artwork (matches the tray icon).
+& $venvPy make_icon.py
+$icoPath = Join-Path (Get-Location) "llmime.ico"
+Write-Host "OK Icon generated at $icoPath"
+
+# 5. Build the standalone windowed executable.
+#    --noconsole: no console window.  --icon embeds the LLMime icon.
+#    compiler.py and daemon.py are pulled in automatically because
+#    daemon_windows.py imports them.
 Write-Host "Building standalone binary..."
-& $venvPy -m PyInstaller -y --onefile --noconsole --name LLMime daemon_windows.py
+& $venvPy -m PyInstaller -y --onefile --noconsole --icon $icoPath --name LLMime daemon_windows.py
 $exePath = Join-Path (Get-Location) "dist\LLMime.exe"
 Write-Host "OK Binary built at $exePath"
 
-# 5. Register autostart via a shortcut in the user's Startup folder.
-$startup = [System.Environment]::GetFolderPath("Startup")
-$lnkPath = Join-Path $startup "LLMime.lnk"
+# 6. Register shortcuts.
+#    - Startup folder  -> auto-launch on login.
+#    - Start Menu      -> searchable / launchable from the Start menu.
 $wsh = New-Object -ComObject WScript.Shell
-$shortcut = $wsh.CreateShortcut($lnkPath)
-$shortcut.TargetPath = $exePath
-$shortcut.WorkingDirectory = (Split-Path $exePath)
-$shortcut.Description = "LLMime Clipboard Bridge (native Slite AST injection)"
-$shortcut.Save()
-Write-Host "OK Autostart shortcut registered: $lnkPath"
 
-# 6. Launch it now.
+function New-LLMimeShortcut($lnkPath) {
+    $sc = $wsh.CreateShortcut($lnkPath)
+    $sc.TargetPath = $exePath
+    $sc.WorkingDirectory = (Split-Path $exePath)
+    $sc.Description = "LLMime Clipboard Bridge (native Slite AST injection)"
+    $sc.IconLocation = "$exePath,0"
+    $sc.Save()
+}
+
+$startupLnk = Join-Path ([System.Environment]::GetFolderPath("Startup")) "LLMime.lnk"
+New-LLMimeShortcut $startupLnk
+Write-Host "OK Autostart shortcut registered: $startupLnk"
+
+# "Programs" = the per-user Start Menu Programs folder; a .lnk here makes the
+# app appear in Start-menu search as "LLMime".
+$startMenuLnk = Join-Path ([System.Environment]::GetFolderPath("Programs")) "LLMime.lnk"
+New-LLMimeShortcut $startMenuLnk
+Write-Host "OK Start Menu shortcut registered: $startMenuLnk"
+
+# 7. Launch it now.
 Write-Host ""
 Write-Host "=== Build Complete ==="
-Write-Host "LLMime will start automatically on login. Starting it now..."
+Write-Host "Search 'LLMime' in the Start menu to launch it, or it will auto-start on login."
+Write-Host "Starting it now..."
 Start-Process -FilePath $exePath
 Write-Host "OK Daemon started (look for the indigo 'L' icon in your system tray)."
