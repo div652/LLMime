@@ -186,16 +186,16 @@ The Linux daemon used an `is_internal_update` boolean to ignore the clipboard-ch
 1b. **Slite-on-Windows paste unverified:** The Windows payload, format name, and end-to-end auto-conversion are verified (Section 6.4), but an actual paste into the Slite Windows desktop app has not been confirmed on the build machine (Slite was not installed). Run `dump_clipboard_win.py` against a real Slite copy to validate the schema if a paste ever misbehaves.
 2. **Notion Incompatibility:** As detailed in Section 2, Notion does not support simple HTML or SlateJS AST clipboard injection.
 3. **Partial Delimiters:** If a user copies text with a single open `$$` but no matching closing pair, it will either fail to match or parse incorrectly.
-4. **Table Formatting:** While the HTML compiler handles basic tables, the conversion from HTML tables to Slite's custom Table SlateJS AST has not been implemented (tables will currently fall back to unstyled paragraphs or code blocks).
+4. **Table Formatting (schema UNVERIFIED):** Markdown tables are now mapped to a structured Slite table AST — `table` → `table-row` → `table-cell` → `unstyled` — with header cells flagged and inline content (math/bold/code) preserved inside cells. **However, the node-type names and the cell-wrapping rule are an inference from Slite's naming convention, not confirmed against a real Slite payload.** They are centralised as the constants `TABLE_TYPE` / `TABLE_ROW_TYPE` / `TABLE_CELL_TYPE` / `TABLE_CELL_WRAPS_BLOCK` in `compiler.py`. To verify/correct: copy a table *from Slite* and run `dump_clipboard_win.py` (Windows) / `dump_electron.py` (Linux), then align those constants to the real schema. Until verified, an unrecognised table type will at worst be normalised by Slate back to paragraphs (same as the previous behaviour), not break the rest of the fragment.
 
 ---
 
 ### 5. Future Expansion & Next Steps
 If you or another developer want to improve this project further, consider these tasks:
 
-#### Task 1: Implement Table AST Mapping
-* **Goal:** Support Markdown tables (`| Col 1 | Col 2 |`) by mapping them to Slite's native Table AST components rather than letting them collapse into unstyled text.
-* **Pointers:** Inspect a copied Slite table payload using `dump_electron.py` to identify the Table, Table Row, and Table Cell schemas.
+#### Task 1: Verify the Table AST Schema  *(implemented; verification pending)*
+* **Status:** Table mapping is implemented in `compiler.parse_table` (see Limitation 4). What remains is to **confirm the real Slite schema** and align the `TABLE_*` constants.
+* **How to verify:** In Slite, build a 2×2 table with an equation and some bold text in cells, copy it, then run `dump_clipboard_win.py` (Windows) or `dump_electron.py` (Linux). Read the `application/x-slite-global` JSON and note: the exact table/row/cell `type` strings, whether cells hold text directly or wrap a block, and how header rows/cells are marked. Update the four constants accordingly.
 
 #### Task 2: Integrate Mermaid.js Diagrams
 * **Goal:** Automatically compile ` ```mermaid ` blocks into Slite's native Diagram AST components.

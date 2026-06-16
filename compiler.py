@@ -82,6 +82,23 @@ def build_web_custom_data(data_dict: dict) -> bytes:
     return struct.pack('<I', len(payload)) + payload
 
 
+# --- Slite table schema ------------------------------------------------------
+# !! UNVERIFIED against a real Slite payload. These node-type names are an
+# inference from Slite's established naming convention (hyphenated container +
+# item, e.g. "unordered-list" / "unordered-list-item", "code-blocks" /
+# "code-block"). To confirm/correct them, copy a table *from Slite* and run
+# dump_clipboard_win.py (Windows) or dump_electron.py (Linux), then update the
+# four constants below to match the real schema. See TECHNICAL_SPEC_V2.md §4
+# (Limitation 4) and Future Task 1.
+TABLE_TYPE = "table"
+TABLE_ROW_TYPE = "table-row"
+TABLE_CELL_TYPE = "table-cell"
+# SlateJS schemas usually require a table cell's children to be *block* nodes,
+# not bare text — so each cell wraps its inline content in an "unstyled" block.
+# If the dump shows cells hold text directly, set this to False.
+TABLE_CELL_WRAPS_BLOCK = True
+
+
 class MarkdownToSlateCompiler:
     """Converts standard LLM Markdown directly into Slite's binary SlateJS format."""
 
@@ -222,6 +239,8 @@ class MarkdownToSlateCompiler:
                 "children": line_nodes,
                 "key": gen_key()
             }]
+        elif tag == 'table':
+            return [self.parse_table(node)]
         else:
             children = self.parse_inline(node)
             if not children:
@@ -232,6 +251,78 @@ class MarkdownToSlateCompiler:
                 "key": gen_key(),
                 "children": children
             }]
+
+    def parse_table(self, node):
+        """Map a Markdown ``<table>`` (thead/tbody/tr/th/td) to a Slite table node.
+
+        Inline content inside each cell (``$math$``, ``**bold**``, ``code``) is
+        run through the normal inline pipeline, so equations and emphasis inside
+        cells survive. Header cells (``<th>``) are marked ``header: True`` on the
+        cell node; if the real Slite schema marks header *rows* instead, this is
+        a trivial adjustment once the dump is available.
+        """
+        rows = []
+        # python-markdown nests rows under <thead>/<tbody>; iterate either.
+        for section in list(node):
+            sec_tag = section.tag.lower() if isinstance(section.tag, str) else ''
+            if sec_tag == 'tr':
+                tr_nodes = [section]
+            elif sec_tag in ('thead', 'tbody', 'tfoot'):
+                tr_nodes = [c for c in section if isinstance(c.tag, str) and c.tag.lower() == 'tr']
+            else:
+                continue
+
+            for tr in tr_nodes:
+                cells = []
+                for cell in tr:
+                    cell_tag = cell.tag.lower() if isinstance(cell.tag, str) else ''
+                    if cell_tag not in ('td', 'th'):
+                        continue
+                    inline = self.parse_inline(cell)
+                    if not inline:
+                        inline = [{"text": "", "key": gen_key()}]
+                    if TABLE_CELL_WRAPS_BLOCK:
+                        cell_children = [{
+                            "type": "unstyled",
+                            "id": gen_id(),
+                            "key": gen_key(),
+                            "children": inline,
+                        }]
+                    else:
+                        cell_children = inline
+                    cell_node = {
+                        "type": TABLE_CELL_TYPE,
+                        "id": gen_id(),
+                        "key": gen_key(),
+                        "children": cell_children,
+                    }
+                    if cell_tag == 'th':
+                        cell_node["header"] = True
+                    cells.append(cell_node)
+                if cells:
+                    rows.append({
+                        "type": TABLE_ROW_TYPE,
+                        "id": gen_id(),
+                        "key": gen_key(),
+                        "children": cells,
+                    })
+
+        if not rows:
+            # Degenerate table — fall back to an empty paragraph rather than
+            # emitting an invalid empty table node.
+            return {
+                "type": "unstyled",
+                "id": gen_id(),
+                "key": gen_key(),
+                "children": [{"text": "", "key": gen_key()}],
+            }
+
+        return {
+            "type": TABLE_TYPE,
+            "id": gen_id(),
+            "key": gen_key(),
+            "children": rows,
+        }
 
     def parse_list_item(self, li_node, item_type):
         children = []
@@ -316,6 +407,7 @@ class MarkdownToSlateCompiler:
             "unstyled": "p", "unordered-list": "ul", "unordered-list-item": "li",
             "ordered-list": "ol", "ordered-list-item": "li",
             "formula": "formula", "formula-line": "formula-line",
+            TABLE_TYPE: "table", TABLE_ROW_TYPE: "tr", TABLE_CELL_TYPE: "td",
         }
 
         if node["type"] == "inline-formula":
