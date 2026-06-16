@@ -38,7 +38,7 @@ When you copy an answer from **Gemini, ChatGPT, or Claude** and paste it into **
 
 ## How It Works
 
-LLMime runs as a **silent background daemon** on your Linux desktop. It hooks into the system clipboard and intercepts every copy event.
+LLMime runs as a **silent background daemon** on your Linux *or* Windows desktop. It hooks into the system clipboard and intercepts every copy event. (See [Windows Installation](#windows-installation) and [Operating System Targets](#-operating-system-targets) for platform details.)
 
 ```
 Ctrl+C  →  Daemon detects $$, $, or ``` in the clipboard
@@ -70,7 +70,9 @@ A **system tray icon** (indigo clipboard badge) shows that the daemon is active.
 
 ## Installation
 
-### Prerequisites
+### Linux Installation
+
+#### Prerequisites
 
 ```bash
 # System dependencies
@@ -80,7 +82,7 @@ sudo apt install python3 python3-venv xclip
 echo $XDG_SESSION_TYPE  # should print: x11
 ```
 
-### Setup
+#### Setup
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/LLMime.git
@@ -94,7 +96,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Build & Deploy
+#### Build & Deploy
 
 ```bash
 ./build.sh
@@ -106,6 +108,30 @@ This script will:
 3. Register a **Desktop Autostart** entry (`~/.config/autostart/llmime.desktop`) so LLMime launches automatically on login.
 4. Register a **Desktop Launcher** entry (`~/.local/share/applications/llmime.desktop`) so you can search for and launch **"LLMime Clipboard Bridge"** from your application menu.
 5. Start the daemon immediately.
+
+### Windows Installation
+
+The Windows daemon (`daemon_windows.py`) has full feature parity with Linux. It shares the same Markdown→Slite compiler (`compiler.py`) but writes the clipboard through the native Win32 API, because Windows keys clipboard formats by registered name rather than by MIME string. See [`TECHNICAL_SPEC_V2.md`](TECHNICAL_SPEC_V2.md) Section 6 for the full rationale.
+
+#### Prerequisites
+* Windows 10/11
+* Python 3.x (the [`py` launcher](https://www.python.org/downloads/windows/) is recommended)
+
+#### Build & Deploy
+
+From the repo root in PowerShell:
+
+```powershell
+.\build_windows.ps1
+```
+
+This script will:
+1. Create a Windows virtual environment (`venv-win`) and install `requirements-windows.txt` (which adds **`pywin32`**) plus PyInstaller.
+2. Build a standalone windowed executable at `dist\LLMime.exe` (`--onefile --noconsole`).
+3. Register **autostart** via a shortcut in your Startup folder (`shell:startup`) so LLMime launches on login.
+4. Start the daemon immediately (look for the indigo **L** icon in your system tray).
+
+> **Diagnostics:** `dump_clipboard_win.py` is a native Win32 clipboard inspector. Copy a block from Slite, run `py dump_clipboard_win.py`, and confirm the `Chromium Web Custom MIME Data Format` entry — useful for verifying Slite's schema on your machine.
 
 ### Usage
 
@@ -200,9 +226,9 @@ The daemon currently works with any LLM source (browser-based or desktop). Futur
 | Platform | Status | Notes |
 |---|---|---|
 | **Linux (X11)** | ✅ Working | Full support — PyQt6 clipboard hooks work natively |
+| **Windows** | ✅ Working | `daemon_windows.py` — native Win32 clipboard write under the `Chromium Web Custom MIME Data Format` name. End-to-end verified; paste into the Slite Windows app pending confirmation (see Spec §6.4) |
 | **Linux (Wayland)** | 🚧 In Progress | Replace PyQt clipboard with `wl-paste --watch` + `wl-copy` pipeline |
 | **macOS** | 🔜 Planned | Use `NSPasteboard` via PyObjC, or port to a Swift helper process |
-| **Windows** | 🔜 Planned | Use `win32clipboard` module; Chromium binary format should be identical |
 
 ---
 
@@ -210,10 +236,15 @@ The daemon currently works with any LLM source (browser-based or desktop). Futur
 
 ```
 LLMime/
-├── daemon.py                        # Core daemon: SlateJS AST compiler + clipboard bridge + tray icon
-├── build.sh                         # Build (PyInstaller) + register autostart desktop launchers
-├── requirements.txt                 # Python dependencies: PyQt6, Markdown
-├── dump_electron.py                 # Debug utility: dump raw clipboard MIME formats
+├── compiler.py                      # OS-independent core: Markdown→Slite AST compiler + Chromium binary packer
+├── daemon.py                        # Linux daemon: clipboard bridge (X11) + tray icon + toast
+├── daemon_windows.py                # Windows daemon: native Win32 clipboard write + tray icon + toast
+├── build.sh                         # Linux build (PyInstaller) + register autostart desktop launchers
+├── build_windows.ps1                # Windows build (PyInstaller) + register Startup-folder autostart
+├── requirements.txt                 # Linux dependencies: PyQt6, Markdown
+├── requirements-windows.txt         # Windows dependencies: PyQt6, Markdown, pywin32
+├── dump_electron.py                 # Debug utility (Linux/Qt): dump raw clipboard MIME formats
+├── dump_clipboard_win.py            # Debug utility (Windows/Win32): enumerate true clipboard format names
 ├── test_markdown_ast.py             # Sandbox: test AST compiler output without running full daemon
 ├── test_slate_inject.py             # Sandbox: manually inject a test Slite AST into clipboard
 ├── TECHNICAL_SPEC_V2.md             # Comprehensive technical specification with failure modes
@@ -240,6 +271,12 @@ To inspect what's on the clipboard (useful for reverse-engineering new editor fo
 ```bash
 source venv/bin/activate
 python dump_electron.py
+```
+
+On **Windows**, use the native inspector instead (it shows the true Win32 format names that the Qt-based dumper hides):
+
+```powershell
+py dump_clipboard_win.py
 ```
 
 ---

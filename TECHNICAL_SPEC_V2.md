@@ -47,6 +47,8 @@ Initially (in v1/v2), the project attempted to solve this by pre-rendering LaTeX
 
 The daemon runs silently in the background. It intercepts the clipboard via `PyQt6` and checks if the text contains mathematical delimiters (`$$` or `$`) and does not already contain a native Slite format.
 
+> **Code layout note (v3.1):** The OS-independent core — the Markdown→Slite AST compiler (`MarkdownToSlateCompiler`) and the Chromium binary packer (`build_web_custom_data`) — was extracted into `compiler.py`. Both the Linux daemon (`daemon.py`) and the Windows daemon (`daemon_windows.py`) import it verbatim, so the two platforms can never drift in how they generate the payload. Only the clipboard *transport* differs per OS (see Section 6).
+
 ```
 ┌────────────────────────────────────────────────────────┐
 │               LLMime AST Injection Pipeline            │
@@ -140,8 +142,46 @@ def build_web_custom_data(data_dict: dict) -> bytes:
 
 ---
 
+### 6. Windows Support (v3.1)
+
+The original v3 daemon targeted Linux/X11. Windows feature parity is provided by `daemon_windows.py`, which reuses the exact same compiler and binary payload but uses a different clipboard *transport*.
+
+#### 6.1 Why a Separate Transport Was Necessary (Failure Mode 6)
+* **Symptom:** Writing `QMimeData.setData("chromium/x-web-custom-data", payload)` via PyQt6 on Windows produced a clipboard entry that Slite (Electron) **did not recognise** on paste — it behaved exactly like the pre-LLMime broken state.
+* **Root Cause:** Linux/X11 identifies clipboard formats directly by their MIME-string name, so the atom `chromium/x-web-custom-data` is what Chromium reads. **Windows does not.** The Win32 clipboard is keyed by numeric format IDs registered *by name* via `RegisterClipboardFormat`. Chromium/Electron registers its web custom data under the Windows clipboard format name **`"Chromium Web Custom MIME Data Format"`**, not the MIME string. Qt's Windows clipboard backend wraps arbitrary MIME types under its own naming scheme, so the payload never lands under the name Slite looks up.
+* **Resolution:** On Windows we keep PyQt6 only for the **tray icon, the toast, and clipboard monitoring** (UX parity), but perform the clipboard **write through the native Win32 API** (`win32clipboard` from `pywin32`). We `RegisterClipboardFormat("Chromium Web Custom MIME Data Format")` and `SetClipboardData` the *identical* `base::Pickle` bytes the Linux version produces.
+
+#### 6.2 The Windows Write Path
+A single `OpenClipboard → EmptyClipboard → SetClipboardData(...) → CloseClipboard` session writes three formats together so they coexist for one paste:
+| Format | Source | Purpose |
+|---|---|---|
+| `CF_UNICODETEXT` | original copied text | plain-text fallback |
+| `"HTML Format"` (CF_HTML) | the Markdown library's HTML, wrapped in the CF_HTML offset header | rich-text fallback for non-Slite apps |
+| `"Chromium Web Custom MIME Data Format"` | `compiler.build_web_custom_data(...)` | the native, editable Slite payload |
+
+The leading `uint32` size prefix and per-string 4-byte padding from Section 3.1 are byte-for-byte the same on Windows — only the format **name** and the **API used to set it** change.
+
+#### 6.3 Re-entrancy & Native-Source Guard
+The Linux daemon used an `is_internal_update` boolean to ignore the clipboard-change event caused by its own write. On Windows, clipboard-update notifications are delivered asynchronously through the message loop, so a boolean flag can race. Instead, `daemon_windows.py` guards with a single content check: **`IsClipboardFormatAvailable("Chromium Web Custom MIME Data Format")`**. If that format is already present, the change is ignored. This elegantly covers *both* cases at once:
+1. **Our own write** (the format we just set is present) → skip, no infinite loop.
+2. **A genuine copy made inside Slite** (Slite writes that format too) → skip, exactly matching the Linux daemon's original "abort if native Slite copy" intent.
+
+`IsClipboardFormatAvailable` does not require opening the clipboard, so the probe is cheap and cannot deadlock against the source application.
+
+#### 6.4 Verification Performed
+* `compiler.py` payload decodes back to the correct AST/semantic-XML (round-trip test).
+* `daemon_windows.write_native_clipboard` writes, and a raw Win32 read-back confirms the clipboard carries a format literally named `Chromium Web Custom MIME Data Format`, the text round-trips, and the payload decodes to the expected Slite AST node types.
+* End-to-end: with the daemon running, setting clipboard text containing `$$…$$` from a separate process caused the daemon to auto-convert (the Chromium format appeared, containing the freshly copied content).
+* **Not yet verified:** an actual paste into the Slite Windows desktop app, because Slite was not installed on the build machine. Use `dump_clipboard_win.py` (copy a Slite block, then run it) to confirm the format name on a machine that has Slite, and to compare Slite's own payload schema against ours.
+
+#### 6.5 Windows Build & Autostart
+`build_windows.ps1` creates `venv-win`, installs `requirements-windows.txt` (adds `pywin32`) plus PyInstaller, builds `dist\LLMime.exe` with `--onefile --noconsole`, and registers autostart via a shortcut in the user's Startup folder (`shell:startup`). `dump_clipboard_win.py` is a native Win32 clipboard inspector for diagnostics (the Qt-based `dump_electron.py` hides true Windows format names).
+
+---
+
 ### 4. Known Limitations
-1. **Wayland Support:** Standard PyQt clipboard monitors can fail to read/write under strict Wayland policies. The current version expects an X11 session or XWayland fallback.
+1. **Wayland Support:** Standard PyQt clipboard monitors can fail to read/write under strict Wayland policies. The Linux daemon (`daemon.py`) expects an X11 session or XWayland fallback. (The Windows daemon is unaffected — it uses the native Win32 clipboard.)
+1b. **Slite-on-Windows paste unverified:** The Windows payload, format name, and end-to-end auto-conversion are verified (Section 6.4), but an actual paste into the Slite Windows desktop app has not been confirmed on the build machine (Slite was not installed). Run `dump_clipboard_win.py` against a real Slite copy to validate the schema if a paste ever misbehaves.
 2. **Notion Incompatibility:** As detailed in Section 2, Notion does not support simple HTML or SlateJS AST clipboard injection.
 3. **Partial Delimiters:** If a user copies text with a single open `$$` but no matching closing pair, it will either fail to match or parse incorrectly.
 4. **Table Formatting:** While the HTML compiler handles basic tables, the conversion from HTML tables to Slite's custom Table SlateJS AST has not been implemented (tables will currently fall back to unstyled paragraphs or code blocks).

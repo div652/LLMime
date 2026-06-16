@@ -1,6 +1,9 @@
 venv/
+venv-win/
 build/
 dist/
+*.spec.win
+_verify_*.py
 node_modules/
 pyinstaller_log.txt
 __pycache__/
