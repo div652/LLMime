@@ -20,6 +20,9 @@ This is the honest verification step the project ideology calls for: prove the
 format name on the real machine instead of trusting an assumption.
 """
 
+import json
+import struct
+
 import win32clipboard
 
 # Standard formats we don't need to dump in detail.
@@ -38,6 +41,50 @@ def format_name(fmt: int) -> str:
         return name if name else f"<unnamed #{fmt}>"
     except Exception:
         return f"<unnamed #{fmt}>"
+
+
+def _read_string16(buf, off):
+    (n,) = struct.unpack_from('<I', buf, off)
+    off += 4
+    s = buf[off:off + n * 2].decode('utf-16le', errors='replace')
+    off += n * 2
+    off += (4 - ((4 + n * 2) % 4)) % 4  # 4-byte padding
+    return s, off
+
+
+def decode_web_custom_data(raw: bytes):
+    """Decode the Chromium web-custom-data base::Pickle into {key: value}.
+
+    Returns None if the bytes don't match the expected layout (so it can be
+    tried safely on any format and only succeeds for the real one).
+    """
+    if len(raw) < 8:
+        return None
+    try:
+        (total,) = struct.unpack_from('<I', raw, 0)
+        if total != len(raw) - 4:       # self-validating size prefix
+            return None
+        off = 4
+        (count,) = struct.unpack_from('<I', raw, off)
+        off += 4
+        if count <= 0 or count > 32:
+            return None
+        out = {}
+        for _ in range(count):
+            k, off = _read_string16(raw, off)
+            v, off = _read_string16(raw, off)
+            out[k] = v
+        return out
+    except Exception:
+        return None
+
+
+def pretty(value: str) -> str:
+    """Pretty-print a value as JSON if it parses, else return it as-is."""
+    try:
+        return json.dumps(json.loads(value), indent=2, ensure_ascii=False)
+    except Exception:
+        return value
 
 
 def extract_strings(raw: bytes, min_len: int = 3):
@@ -91,8 +138,20 @@ def main():
                 continue
             raw = bytes(data) if data is not None else b""
             print(f"\n>>> {name} ({len(raw)} bytes)")
-            for i, s in enumerate(extract_strings(raw)[:30]):
-                print(f"[{i}] {s[:200]}")
+
+            decoded = decode_web_custom_data(raw)
+            if decoded:
+                for key, val in decoded.items():
+                    print(f"\n  --- key: {key} ---")
+                    print(pretty(val))
+                    if "slite-global" in key:
+                        out_file = "slite_global_dump.json"
+                        with open(out_file, "w", encoding="utf-8") as fh:
+                            fh.write(pretty(val))
+                        print(f"\n  (full JSON written to {out_file})")
+            else:
+                for i, s in enumerate(extract_strings(raw)[:30]):
+                    print(f"[{i}] {s[:200]}")
     finally:
         win32clipboard.CloseClipboard()
     print("\n===========================================================")
