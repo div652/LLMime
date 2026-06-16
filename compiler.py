@@ -82,21 +82,9 @@ def build_web_custom_data(data_dict: dict) -> bytes:
     return struct.pack('<I', len(payload)) + payload
 
 
-# --- Slite table schema ------------------------------------------------------
-# !! UNVERIFIED against a real Slite payload. These node-type names are an
-# inference from Slite's established naming convention (hyphenated container +
-# item, e.g. "unordered-list" / "unordered-list-item", "code-blocks" /
-# "code-block"). To confirm/correct them, copy a table *from Slite* and run
-# dump_clipboard_win.py (Windows) or dump_electron.py (Linux), then update the
-# four constants below to match the real schema. See TECHNICAL_SPEC_V2.md §4
-# (Limitation 4) and Future Task 1.
-TABLE_TYPE = "table"
-TABLE_ROW_TYPE = "table-row"
-TABLE_CELL_TYPE = "table-cell"
-# SlateJS schemas usually require a table cell's children to be *block* nodes,
-# not bare text — so each cell wraps its inline content in an "unstyled" block.
-# If the dump shows cells hold text directly, set this to False.
-TABLE_CELL_WRAPS_BLOCK = True
+# Separator inserted between cells when a Markdown table is flattened to plain
+# paragraph rows (see MarkdownToSlateCompiler.parse_table for why).
+TABLE_CELL_SEPARATOR = "  |  "
 
 
 class MarkdownToSlateCompiler:
@@ -240,7 +228,7 @@ class MarkdownToSlateCompiler:
                 "key": gen_key()
             }]
         elif tag == 'table':
-            return [self.parse_table(node)]
+            return self.parse_table(node)
         else:
             children = self.parse_inline(node)
             if not children:
@@ -253,16 +241,22 @@ class MarkdownToSlateCompiler:
             }]
 
     def parse_table(self, node):
-        """Map a Markdown ``<table>`` (thead/tbody/tr/th/td) to a Slite table node.
+        """Render a Markdown ``<table>`` as a sequence of safe paragraph rows.
 
-        Inline content inside each cell (``$math$``, ``**bold**``, ``code``) is
-        run through the normal inline pipeline, so equations and emphasis inside
-        cells survive. Header cells (``<th>``) are marked ``header: True`` on the
-        cell node; if the real Slite schema marks header *rows* instead, this is
-        a trivial adjustment once the dump is available.
+        Slite has **no inline table node** — its tables are full *databases*
+        (clipboard keys ``application/x-slite-database-*``), which are a
+        standalone payload that cannot be embedded inline alongside other blocks
+        such as a heading or paragraphs. See TECHNICAL_SPEC_V2.md Section 7.
+
+        Emitting a guessed ``table`` node makes Slite reject the *entire*
+        fragment and paste raw text. So instead we flatten the table into valid
+        ``unstyled`` paragraphs — one per row, cells joined by ``|`` — which
+        paste cleanly and still preserve inline math/bold inside cells. Header
+        cells are bolded so the column titles stay distinguishable.
+
+        Returns a *list* of paragraph nodes (one per row).
         """
-        rows = []
-        # python-markdown nests rows under <thead>/<tbody>; iterate either.
+        paragraphs = []
         for section in list(node):
             sec_tag = section.tag.lower() if isinstance(section.tag, str) else ''
             if sec_tag == 'tr':
@@ -273,56 +267,31 @@ class MarkdownToSlateCompiler:
                 continue
 
             for tr in tr_nodes:
-                cells = []
-                for cell in tr:
-                    cell_tag = cell.tag.lower() if isinstance(cell.tag, str) else ''
-                    if cell_tag not in ('td', 'th'):
-                        continue
-                    inline = self.parse_inline(cell)
-                    if not inline:
-                        inline = [{"text": "", "key": gen_key()}]
-                    if TABLE_CELL_WRAPS_BLOCK:
-                        cell_children = [{
-                            "type": "unstyled",
-                            "id": gen_id(),
-                            "key": gen_key(),
-                            "children": inline,
-                        }]
-                    else:
-                        cell_children = inline
-                    cell_node = {
-                        "type": TABLE_CELL_TYPE,
-                        "id": gen_id(),
-                        "key": gen_key(),
-                        "children": cell_children,
-                    }
-                    if cell_tag == 'th':
-                        cell_node["header"] = True
-                    cells.append(cell_node)
-                if cells:
-                    rows.append({
-                        "type": TABLE_ROW_TYPE,
-                        "id": gen_id(),
-                        "key": gen_key(),
-                        "children": cells,
-                    })
+                cells = [c for c in tr if isinstance(c.tag, str) and c.tag.lower() in ('td', 'th')]
+                row_children = []
+                for idx, cell in enumerate(cells):
+                    is_header = cell.tag.lower() == 'th'
+                    inline = self.parse_inline(cell, {'bold': True} if is_header else None)
+                    if idx > 0:
+                        row_children.append({"text": TABLE_CELL_SEPARATOR, "key": gen_key()})
+                    row_children.extend(inline)
+                if not row_children:
+                    row_children = [{"text": "", "key": gen_key()}]
+                paragraphs.append({
+                    "type": "unstyled",
+                    "id": gen_id(),
+                    "key": gen_key(),
+                    "children": row_children,
+                })
 
-        if not rows:
-            # Degenerate table — fall back to an empty paragraph rather than
-            # emitting an invalid empty table node.
-            return {
+        if not paragraphs:
+            paragraphs.append({
                 "type": "unstyled",
                 "id": gen_id(),
                 "key": gen_key(),
                 "children": [{"text": "", "key": gen_key()}],
-            }
-
-        return {
-            "type": TABLE_TYPE,
-            "id": gen_id(),
-            "key": gen_key(),
-            "children": rows,
-        }
+            })
+        return paragraphs
 
     def parse_list_item(self, li_node, item_type):
         children = []
@@ -407,7 +376,6 @@ class MarkdownToSlateCompiler:
             "unstyled": "p", "unordered-list": "ul", "unordered-list-item": "li",
             "ordered-list": "ol", "ordered-list-item": "li",
             "formula": "formula", "formula-line": "formula-line",
-            TABLE_TYPE: "table", TABLE_ROW_TYPE: "tr", TABLE_CELL_TYPE: "td",
         }
 
         if node["type"] == "inline-formula":
