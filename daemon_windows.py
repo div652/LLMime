@@ -37,7 +37,7 @@ import win32clipboard
 import win32con
 
 # Shared OS-independent core.
-from compiler import MarkdownToSlateCompiler
+from compiler import MarkdownToSlateCompiler, looks_like_markdown
 # Reuse the Qt tray icon + toast from the Linux daemon (pure Qt, OS-independent).
 from daemon import create_tray_icon, Toast
 
@@ -172,7 +172,7 @@ class WindowsClipboardBridge:
             return
 
         plain_text = mime_data.text()
-        if '$$' not in plain_text and '$' not in plain_text:
+        if not looks_like_markdown(plain_text):
             return
 
         custom_bytes = self.compiler.compile(plain_text)

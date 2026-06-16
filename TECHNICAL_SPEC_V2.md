@@ -45,7 +45,9 @@ Initially (in v1/v2), the project attempted to solve this by pre-rendering LaTeX
 
 ### 3. The Final Correct Implementation (v3)
 
-The daemon runs silently in the background. It intercepts the clipboard via `PyQt6` and checks if the text contains mathematical delimiters (`$$` or `$`) and does not already contain a native Slite format.
+The daemon runs silently in the background. It intercepts the clipboard via `PyQt6` and checks (via `compiler.looks_like_markdown`) whether the copied text carries a **structural Markdown signal** — math (`$$`/`$`), a fenced code block (` ``` `), a Markdown table, an ATX heading (`#`), a list, or `**bold**` — and that it does not already contain a native Slite format. (Originally this gate was math-only, which silently ignored code/tables/headings; see the trigger note below.)
+
+> **Trigger widening (v3.1):** The gate now fires on any of the structural markers above, not just `$`. Ordinary prose is still left untouched because a *structural* marker is required (an inline dash or `@` in a sentence does not match). The detector is OS-independent and lives in `compiler.looks_like_markdown`, so both daemons share it.
 
 > **Code layout note (v3.1):** The OS-independent core — the Markdown→Slite AST compiler (`MarkdownToSlateCompiler`) and the Chromium binary packer (`build_web_custom_data`) — was extracted into `compiler.py`. Both the Linux daemon (`daemon.py`) and the Windows daemon (`daemon_windows.py`) import it verbatim, so the two platforms can never drift in how they generate the payload. Only the clipboard *transport* differs per OS (see Section 6).
 

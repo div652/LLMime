@@ -6,7 +6,7 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 
 # OS-independent core (Markdown -> Slite AST -> Chromium binary payload).
 # Shared verbatim with the Windows daemon. See compiler.py.
-from compiler import MarkdownToSlateCompiler
+from compiler import MarkdownToSlateCompiler, looks_like_markdown
 
 def create_tray_icon():
     pixmap = QPixmap(64, 64)
@@ -101,7 +101,7 @@ class ClipboardBridge:
             
         if mime_data.hasText():
             plain_text = mime_data.text()
-            if '$$' not in plain_text and '$' not in plain_text:
+            if not looks_like_markdown(plain_text):
                 return
             
             raw_bytes = self.compiler.compile(plain_text)

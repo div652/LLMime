@@ -21,6 +21,44 @@ import markdown
 import xml.etree.ElementTree as ET
 
 
+# --- Trigger detection -------------------------------------------------------
+# The daemon should only rewrite the clipboard when the copied text actually
+# looks like LLM Markdown worth converting. Originally this was gated solely on
+# the presence of a "$" math delimiter, which silently ignored code blocks,
+# tables, headings, and lists. The signals below widen the gate while still
+# requiring a *structural* Markdown marker, so ordinary prose copied for use in
+# other apps is left untouched.
+_FENCE_RE = re.compile(r'```')                                  # fenced code block
+_ATX_HEADER_RE = re.compile(r'^[ \t]{0,3}#{1,6}[ \t]+\S', re.MULTILINE)  # # heading
+_LIST_RE = re.compile(r'^[ \t]{0,3}([-*+][ \t]+|\d+\.[ \t]+)\S', re.MULTILINE)  # - / 1. list
+_BOLD_RE = re.compile(r'\*\*.+?\*\*|__.+?__')                    # **bold** / __bold__
+# A Markdown table: a line containing a pipe, then a delimiter row made only of
+# pipes / dashes / colons / whitespace and containing at least one dash.
+_TABLE_RE = re.compile(
+    r'^[^\n]*\|[^\n]*\r?\n[ \t]*\|?[ \t:|-]*-[ \t:|-]*\|?[ \t]*$',
+    re.MULTILINE,
+)
+
+
+def looks_like_markdown(text: str) -> bool:
+    """True if ``text`` carries a structural Markdown signal worth converting."""
+    if not text:
+        return False
+    if '$' in text:                       # math: $...$ or $$...$$ (original gate)
+        return True
+    if _FENCE_RE.search(text):            # ``` code fences
+        return True
+    if _TABLE_RE.search(text):            # | a | b | with a |---| row
+        return True
+    if _ATX_HEADER_RE.search(text):       # # / ## headings
+        return True
+    if _LIST_RE.search(text):             # bullet / numbered lists
+        return True
+    if _BOLD_RE.search(text):             # **bold** emphasis
+        return True
+    return False
+
+
 def gen_id():
     return uuid.uuid4().hex[:14]
 
