@@ -87,6 +87,17 @@ def build_web_custom_data(data_dict: dict) -> bytes:
 # paragraph rows (see MarkdownToSlateCompiler.parse_table for why).
 TABLE_CELL_SEPARATOR = "  |  "
 
+# HTML void elements (no closing tag). Markdown passes raw inline HTML such as
+# ``<br>`` straight through, but ElementTree needs well-formed XML, so we
+# self-close them (``<br>`` -> ``<br/>``) before parsing. LLM tables commonly
+# use ``<br>`` inside cells, which would otherwise break the whole parse.
+_VOID_TAGS = "area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr"
+_VOID_RE = re.compile(rf'<({_VOID_TAGS})((?:\s[^>]*?)?)\s*/?>', re.IGNORECASE)
+
+
+def self_close_void_tags(html: str) -> str:
+    return _VOID_RE.sub(r'<\1\2/>', html)
+
 
 class MarkdownToSlateCompiler:
     """Converts standard LLM Markdown directly into Slite's binary SlateJS format."""
@@ -149,8 +160,8 @@ class MarkdownToSlateCompiler:
 
                 protected_text = self._shield_inline_math(block_part)
 
-                # Render to HTML
-                html = markdown.markdown(protected_text, extensions=['fenced_code', 'tables'])
+                # Render to HTML (self-close void tags like <br> so it's valid XML)
+                html = self_close_void_tags(markdown.markdown(protected_text, extensions=['fenced_code', 'tables']))
 
                 # Parse HTML tree
                 try:
@@ -191,7 +202,7 @@ class MarkdownToSlateCompiler:
             return None
 
         protected = self._shield_inline_math(text)
-        html = markdown.markdown(protected, extensions=['fenced_code', 'tables'])
+        html = self_close_void_tags(markdown.markdown(protected, extensions=['fenced_code', 'tables']))
         try:
             root = ET.fromstring(f"<div>{html}</div>")
         except Exception:
