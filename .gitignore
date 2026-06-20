@@ -1,7 +1,11 @@
 venv/
+venv-win/
 build/
 dist/
+*.spec.win
+_verify_*.py
 node_modules/
 pyinstaller_log.txt
 __pycache__/
 *.pyc
+slite_global_dump.json

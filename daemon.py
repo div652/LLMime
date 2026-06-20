@@ -1,319 +1,50 @@
 import sys
 import os
-import re
-import uuid
-import struct
-import json
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QSystemTrayIcon, QMenu
 from PyQt6.QtCore import QMimeData, Qt, QTimer, QPropertyAnimation
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 
-def create_tray_icon():
-    pixmap = QPixmap(64, 64)
+# OS-independent core (Markdown -> Slite AST -> Chromium binary payload).
+# Shared verbatim with the Windows daemon. See compiler.py.
+from compiler import MarkdownToSlateCompiler, looks_like_markdown
+
+def render_icon_pixmap(size=64):
+    """Draw the LLMime icon (indigo clipboard + white "L") at the given size.
+
+    The single source of truth for the icon artwork, shared by the tray icon
+    (``create_tray_icon``) and the standalone ``.ico`` generator (``make_icon.py``)
+    so the Start-menu / taskbar icon matches the tray icon exactly. Coordinates
+    are authored on a 64px grid and scaled by ``size / 64``.
+    """
+    s = size / 64.0
+    pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
-    
+
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    
+
     # Draw a rounded rectangle for clipboard backing (sleek indigo)
     painter.setBrush(QColor("#4F46E5"))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawRoundedRect(4, 4, 56, 56, 12, 12)
-    
+    painter.drawRoundedRect(int(4 * s), int(4 * s), int(56 * s), int(56 * s), 12 * s, 12 * s)
+
     # Draw a small metal clip at the top
     painter.setBrush(QColor("#E0E7FF"))
-    painter.drawRoundedRect(20, 2, 24, 10, 3, 3)
-    
+    painter.drawRoundedRect(int(20 * s), int(2 * s), int(24 * s), int(10 * s), 3 * s, 3 * s)
+
     # Draw a bold white letter "L" representing LLMime
     painter.setPen(QColor("#FFFFFF"))
-    font = QFont("sans-serif", 28, QFont.Weight.Bold)
+    font = QFont("sans-serif", max(1, int(28 * s)), QFont.Weight.Bold)
     painter.setFont(font)
     painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "L")
-    
+
     painter.end()
-    return QIcon(pixmap)
+    return pixmap
 
 
-def gen_id():
-    return uuid.uuid4().hex[:14]
+def create_tray_icon():
+    return QIcon(render_icon_pixmap(64))
 
-def gen_key():
-    return f"_{uuid.uuid4().hex[:3]}"
-
-def write_string16(s: str) -> bytes:
-    data = struct.pack('<I', len(s)) + s.encode('utf-16le')
-    padding = (4 - (len(data) % 4)) % 4
-    data += b'\0' * padding
-    return data
-
-def build_web_custom_data(data_dict: dict) -> bytes:
-    payload = struct.pack('<I', len(data_dict))
-    for k, v in data_dict.items():
-        payload += write_string16(k)
-        payload += write_string16(v)
-    return struct.pack('<I', len(payload)) + payload
-
-import markdown
-import xml.etree.ElementTree as ET
-
-class MarkdownToSlateCompiler:
-    """Converts standard LLM Markdown directly into Slite's binary SlateJS format."""
-    
-    def __init__(self):
-        self.inline_math_map = {}
-        
-    def compile(self, text: str) -> bytes:
-        slate_ast = {"fragment": {"children": []}, "data": {}}
-        
-        # Tokenize by finding block $$...$$ first
-        block_tokens = re.split(r'\$\$(.*?)\$\$', text, flags=re.DOTALL)
-        
-        for i, block_part in enumerate(block_tokens):
-            if i % 2 == 1:
-                # Block math
-                math_text = block_part.strip()
-                f_id = gen_id()
-                fl_id = gen_id()
-                ast_node = {
-                    "type": "formula",
-                    "id": f_id,
-                    "key": gen_key(),
-                    "children": [{
-                        "type": "formula-line",
-                        "id": fl_id,
-                        "key": gen_key(),
-                        "children": [{"text": math_text, "key": gen_key()}]
-                    }]
-                }
-                slate_ast["fragment"]["children"].append(ast_node)
-            else:
-                # Plain text blocks containing markdown
-                if not block_part.strip():
-                    continue
-                
-                self.inline_math_map.clear()
-                
-                # Protect inline math from markdown parser
-                def hide_math(m):
-                    idx = len(self.inline_math_map)
-                    key = f"MATHPLACEHOLDER{idx}END"
-                    self.inline_math_map[key] = m.group(1)
-                    return key
-                    
-                protected_text = re.sub(r'(?<!\$)\$([^$\n]+?)\$(?!\$)', hide_math, block_part)
-                
-                # Render to HTML
-                html = markdown.markdown(protected_text, extensions=['fenced_code', 'tables'])
-                
-                # Parse HTML tree
-                try:
-                    root = ET.fromstring(f"<div>{html}</div>")
-                    for child in root:
-                        ast_nodes = self.parse_block(child)
-                        slate_ast["fragment"]["children"].extend(ast_nodes)
-                except Exception as e:
-                    # Fallback to plain text if XML parsing somehow fails
-                    slate_ast["fragment"]["children"].append({
-                        "type": "unstyled",
-                        "id": gen_id(),
-                        "key": gen_key(),
-                        "children": [{"text": block_part, "key": gen_key()}]
-                    })
-                
-        # Generate semantic-xml dynamically from AST
-        semantic_xml = "".join(self.ast_to_semantic_xml(node) for node in slate_ast["fragment"]["children"])
-                
-        custom_dict = {
-            "application/x-slite-global": json.dumps(slate_ast, separators=(',', ':')),
-            "application/x-slite-semantic-xml": semantic_xml
-        }
-        
-        return build_web_custom_data(custom_dict)
-
-    def parse_block(self, node) -> list:
-        tag = node.tag.lower()
-        if tag in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            type_map = {'h1': 'header-one', 'h2': 'header-two', 'h3': 'header-three', 
-                        'h4': 'header-four', 'h5': 'header-five', 'h6': 'header-six'}
-            return [{
-                "type": type_map[tag],
-                "id": gen_id(),
-                "key": gen_key(),
-                "children": self.parse_inline(node)
-            }]
-        elif tag == 'ul':
-            return [{
-                "type": "unordered-list",
-                "id": gen_id(),
-                "key": gen_key(),
-                "children": [self.parse_list_item(li, "unordered-list-item") for li in node if li.tag == 'li']
-            }]
-        elif tag == 'ol':
-            return [{
-                "type": "ordered-list",
-                "id": gen_id(),
-                "key": gen_key(),
-                "children": [self.parse_list_item(li, "ordered-list-item") for li in node if li.tag == 'li']
-            }]
-        elif tag == 'p':
-            children = self.parse_inline(node)
-            if not children:
-                children = [{"text": "", "key": gen_key()}]
-            return [{
-                "type": "unstyled",
-                "id": gen_id(),
-                "key": gen_key(),
-                "children": children
-            }]
-        elif tag == 'pre':
-            code_el = node.find('code')
-            text = code_el.text if code_el is not None else node.text
-            if not text: text = ""
-            
-            lang = ""
-            if code_el is not None and 'class' in code_el.attrib:
-                cls = code_el.attrib['class']
-                if cls.startswith('language-'):
-                    lang = cls[len('language-'):]
-                    
-            if text.endswith('\n'):
-                text = text[:-1]
-            lines = text.split('\n')
-            
-            line_nodes = []
-            for line in lines:
-                line_nodes.append({
-                    "type": "code-block",
-                    "id": gen_id(),
-                    "language": lang,
-                    "children": [{"text": line, "key": gen_key()}],
-                    "key": gen_key()
-                })
-            return [{
-                "type": "code-blocks",
-                "id": gen_id(),
-                "wrapCode": False,
-                "children": line_nodes,
-                "key": gen_key()
-            }]
-        else:
-            children = self.parse_inline(node)
-            if not children:
-                children = [{"text": "", "key": gen_key()}]
-            return [{
-                "type": "unstyled",
-                "id": gen_id(),
-                "key": gen_key(),
-                "children": children
-            }]
-
-    def parse_list_item(self, li_node, item_type):
-        children = []
-        for child in li_node:
-            children.extend(self.parse_inline(child))
-            if child.tail:
-                children.extend(self.process_text(child.tail, {}))
-        
-        if li_node.text:
-            children = self.process_text(li_node.text, {}) + children
-            
-        if not children:
-            children = [{"text": "", "key": gen_key()}]
-            
-        return {
-            "type": item_type,
-            "id": gen_id(),
-            "key": gen_key(),
-            "children": children
-        }
-
-    def parse_inline(self, node, marks=None) -> list:
-        if marks is None:
-            marks = {}
-        else:
-            marks = marks.copy()
-            
-        tag = node.tag.lower() if isinstance(node.tag, str) else ''
-        if tag in ['strong', 'b']:
-            marks['bold'] = True
-        elif tag in ['em', 'i']:
-            marks['italic'] = True
-        elif tag == 'code':
-            marks['code'] = True
-            
-        children = []
-        if node.text:
-            children.extend(self.process_text(node.text, marks))
-            
-        for child in node:
-            children.extend(self.parse_inline(child, marks))
-            
-            if child.tail:
-                children.extend(self.process_text(child.tail, marks))
-                
-        return children
-
-    def process_text(self, text: str, marks: dict) -> list:
-        text = text.replace('\n', ' ')
-        parts = re.split(r'(MATHPLACEHOLDER\d+END)', text)
-        nodes = []
-        for p in parts:
-            if not p:
-                continue
-            if p.startswith('MATHPLACEHOLDER') and p.endswith('END'):
-                math_str = self.inline_math_map.get(p)
-                if math_str is not None:
-                    nodes.append({
-                        "formula": math_str,
-                        "id": gen_id(),
-                        "type": "inline-formula",
-                        "children": [{"text": "", "key": gen_key()}],
-                        "key": gen_key()
-                    })
-                else:
-                    nodes.append({"text": p, **marks, "key": gen_key()})
-            else:
-                nodes.append({"text": p, **marks, "key": gen_key()})
-        return nodes
-
-    def ast_to_semantic_xml(self, node) -> str:
-        if "text" in node:
-            text = node["text"].replace('<', '&lt;').replace('>', '&gt;')
-            if node.get("bold"): text = f"<b>{text}</b>"
-            if node.get("italic"): text = f"<i>{text}</i>"
-            if node.get("code"): text = f"<code>{text}</code>"
-            return text
-        
-        tag_map = {
-            "header-one": "h1", "header-two": "h2", "header-three": "h3",
-            "header-four": "h4", "header-five": "h5", "header-six": "h6",
-            "unstyled": "p", "unordered-list": "ul", "unordered-list-item": "li",
-            "ordered-list": "ol", "ordered-list-item": "li",
-            "formula": "formula", "formula-line": "formula-line",
-        }
-        
-        if node["type"] == "inline-formula":
-            safe_math = node["formula"].replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
-            return f'<inline-formula id="{node["id"]}" formula="{safe_math}" />'
-            
-        if node["type"] == "code-blocks":
-            lang = ""
-            if node.get("children") and "language" in node["children"][0]:
-                lang = node["children"][0]["language"]
-            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
-            return f'<code-block id="{node["id"]}" language="{lang}">{inner}</code-block>'
-            
-        if node["type"] == "code-block":
-            lang = node.get("language", "")
-            inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
-            return f'<code-line id="{node["id"]}" language="{lang}">{inner}</code-line>'
-            
-        tag = tag_map.get(node["type"], "div")
-        inner = "".join(self.ast_to_semantic_xml(c) for c in node.get("children", []))
-        if "id" in node:
-            return f'<{tag} id="{node["id"]}">{inner}</{tag}>'
-        else:
-            return f'<{tag}>{inner}</{tag}>'
 
 class Toast(QWidget):
     """Ephemeral translucent popup"""
@@ -382,7 +113,7 @@ class ClipboardBridge:
             
         if mime_data.hasText():
             plain_text = mime_data.text()
-            if '$$' not in plain_text and '$' not in plain_text:
+            if not looks_like_markdown(plain_text):
                 return
             
             raw_bytes = self.compiler.compile(plain_text)

@@ -45,7 +45,11 @@ Initially (in v1/v2), the project attempted to solve this by pre-rendering LaTeX
 
 ### 3. The Final Correct Implementation (v3)
 
-The daemon runs silently in the background. It intercepts the clipboard via `PyQt6` and checks if the text contains mathematical delimiters (`$$` or `$`) and does not already contain a native Slite format.
+The daemon runs silently in the background. It intercepts the clipboard via `PyQt6` and checks (via `compiler.looks_like_markdown`) whether the copied text carries a **structural Markdown signal** — math (`$$`/`$`), a fenced code block (` ``` `), a Markdown table, an ATX heading (`#`), a list, or `**bold**` — and that it does not already contain a native Slite format. (Originally this gate was math-only, which silently ignored code/tables/headings; see the trigger note below.)
+
+> **Trigger widening (v3.1):** The gate now fires on any of the structural markers above, not just `$`. Ordinary prose is still left untouched because a *structural* marker is required (an inline dash or `@` in a sentence does not match). The detector is OS-independent and lives in `compiler.looks_like_markdown`, so both daemons share it.
+
+> **Code layout note (v3.1):** The OS-independent core — the Markdown→Slite AST compiler (`MarkdownToSlateCompiler`) and the Chromium binary packer (`build_web_custom_data`) — was extracted into `compiler.py`. Both the Linux daemon (`daemon.py`) and the Windows daemon (`daemon_windows.py`) import it verbatim, so the two platforms can never drift in how they generate the payload. Only the clipboard *transport* differs per OS (see Section 6).
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -140,20 +144,82 @@ def build_web_custom_data(data_dict: dict) -> bytes:
 
 ---
 
+### 6. Windows Support (v3.1)
+
+The original v3 daemon targeted Linux/X11. Windows feature parity is provided by `daemon_windows.py`, which reuses the exact same compiler and binary payload but uses a different clipboard *transport*.
+
+#### 6.1 Why a Separate Transport Was Necessary (Failure Mode 6)
+* **Symptom:** Writing `QMimeData.setData("chromium/x-web-custom-data", payload)` via PyQt6 on Windows produced a clipboard entry that Slite (Electron) **did not recognise** on paste — it behaved exactly like the pre-LLMime broken state.
+* **Root Cause:** Linux/X11 identifies clipboard formats directly by their MIME-string name, so the atom `chromium/x-web-custom-data` is what Chromium reads. **Windows does not.** The Win32 clipboard is keyed by numeric format IDs registered *by name* via `RegisterClipboardFormat`. Chromium/Electron registers its web custom data under the Windows clipboard format name **`"Chromium Web Custom MIME Data Format"`**, not the MIME string. Qt's Windows clipboard backend wraps arbitrary MIME types under its own naming scheme, so the payload never lands under the name Slite looks up.
+* **Resolution:** On Windows we keep PyQt6 only for the **tray icon, the toast, and clipboard monitoring** (UX parity), but perform the clipboard **write through the native Win32 API** (`win32clipboard` from `pywin32`). We `RegisterClipboardFormat("Chromium Web Custom MIME Data Format")` and `SetClipboardData` the *identical* `base::Pickle` bytes the Linux version produces.
+
+#### 6.2 The Windows Write Path
+A single `OpenClipboard → EmptyClipboard → SetClipboardData(...) → CloseClipboard` session writes three formats together so they coexist for one paste:
+| Format | Source | Purpose |
+|---|---|---|
+| `CF_UNICODETEXT` | original copied text | plain-text fallback |
+| `"HTML Format"` (CF_HTML) | the Markdown library's HTML, wrapped in the CF_HTML offset header | rich-text fallback for non-Slite apps |
+| `"Chromium Web Custom MIME Data Format"` | `compiler.build_web_custom_data(...)` | the native, editable Slite payload |
+
+The leading `uint32` size prefix and per-string 4-byte padding from Section 3.1 are byte-for-byte the same on Windows — only the format **name** and the **API used to set it** change.
+
+#### 6.3 Re-entrancy & Native-Source Guard
+The Linux daemon used an `is_internal_update` boolean to ignore the clipboard-change event caused by its own write. On Windows, clipboard-update notifications are delivered asynchronously through the message loop, so a boolean flag can race. Instead, `daemon_windows.py` guards with a single content check: **`IsClipboardFormatAvailable("Chromium Web Custom MIME Data Format")`**. If that format is already present, the change is ignored. This elegantly covers *both* cases at once:
+1. **Our own write** (the format we just set is present) → skip, no infinite loop.
+2. **A genuine copy made inside Slite** (Slite writes that format too) → skip, exactly matching the Linux daemon's original "abort if native Slite copy" intent.
+
+`IsClipboardFormatAvailable` does not require opening the clipboard, so the probe is cheap and cannot deadlock against the source application.
+
+#### 6.4 Verification Performed
+* `compiler.py` payload decodes back to the correct AST/semantic-XML (round-trip test).
+* `daemon_windows.write_native_clipboard` writes, and a raw Win32 read-back confirms the clipboard carries a format literally named `Chromium Web Custom MIME Data Format`, the text round-trips, and the payload decodes to the expected Slite AST node types.
+* End-to-end: with the daemon running, setting clipboard text containing `$$…$$` from a separate process caused the daemon to auto-convert (the Chromium format appeared, containing the freshly copied content).
+* **Not yet verified:** an actual paste into the Slite Windows desktop app, because Slite was not installed on the build machine. Use `dump_clipboard_win.py` (copy a Slite block, then run it) to confirm the format name on a machine that has Slite, and to compare Slite's own payload schema against ours.
+
+#### 6.5 Windows Build & Autostart
+`build_windows.ps1` creates `venv-win`, installs `requirements-windows.txt` (adds `pywin32`) plus PyInstaller, builds `dist\LLMime.exe` with `--onefile --noconsole`, and registers autostart via a shortcut in the user's Startup folder (`shell:startup`). `dump_clipboard_win.py` is a native Win32 clipboard inspector for diagnostics (the Qt-based `dump_electron.py` hides true Windows format names).
+
+---
+
+### 7. Slite Tables Are Databases (Failure Mode 7)
+
+The original assumption (Limitation 4, v3) was that Slite tables would be a SlateJS `table` node embedded in `application/x-slite-global`. **A real Slite table copy disproves this.**
+
+* **Symptom:** Pasting a Markdown table emitted as a guessed `table` / `table-row` / `table-cell` node caused Slite to reject the **whole** fragment and paste raw Markdown text — even surrounding headings/paragraphs were lost.
+* **Root cause (from a real Slite copy, captured with `dump_clipboard_win.py`):** A Slite "table" is a **database**. It is *not* in `application/x-slite-global` at all. Instead it uses two dedicated clipboard keys:
+  * `application/x-slite-database-fragment` — the whole grid.
+  * `application/x-slite-database-field` — the selection-anchor field/column descriptor.
+* **Observed `database-fragment` schema:**
+  * `columns`: `{columnKey: {key, name, type, position, data, createdAt, updatedAt, createdBy, updatedBy}}`. Column `type` is one of `text`, `users`, `multi-select`, `todo`, … The first column is the primary "Title" (`type: text`).
+  * `records` (rows): `{recordId: {key, position, fields: {columnKey: fieldData}, createdAt, updatedAt, createdBy, updatedBy}}`. The Title column is **absent** from `record.fields`; its value lives only in `content`.
+  * `fields`: an ordered `[[recordId, [[columnKey, fieldDataOrNull], …]], …]` projection (Title column entry is `null`).
+  * `content`: `{"{recordId}-{columnKey}": {fieldId, recordId, id, type: "database-table-cell", key, children: [<SlateJS blocks: unstyled / unordered-list / …>]}}`. **This is where the rich cell content lives** — so cell text/formatting reuses the same node types we already emit. Text-type columns additionally duplicate a plain `data.text` in `record.fields`.
+  * Records/columns carry `createdBy`/`updatedBy` = the author's user id and millisecond `createdAt`/`updatedAt` timestamps.
+* **Hard constraint:** A database is a **standalone** clipboard payload (only the `database-*` keys are present, no `x-slite-global`). It therefore **cannot be embedded inline** alongside a heading and paragraphs in a single paste. So a copied LLM answer of "heading + table + prose" cannot become heading + native-table + prose in one shot.
+* **Resolution — two paths, by content shape:**
+  * **Single-table copy** (the entire selection is one Markdown table): `compiler._build_table_database` generates a native Slite **database** payload — `application/x-slite-database-fragment` (+ `-field` anchor) with one `text` column per Markdown column, one record per body row, and a `database-table-cell` per cell in `content` (reusing the inline pipeline, so `$math$` becomes `inline-formula` inside cells). Column 0 is treated as the primary "Title" column (no `record.fields` entry, content only), matching observed behaviour.
+  * **Mixed content** (heading/prose around a table): falls back to flattening the table into valid `unstyled` paragraph rows (cells joined by `|`, header bold, inline math preserved), because a database can't be embedded inline.
+* **VERIFIED against a live Slite paste** (Windows, Slite desktop): a single-table copy pastes as a real, editable Slite table/database with inline math intact. Confirmed findings:
+  * `createdBy`/`updatedBy` are **not required** — they were omitted (`user_id = None`) and Slite regenerated ownership on paste. So the `user_id` capture idea is unnecessary for tables.
+  * The millisecond `createdAt`/`updatedAt` we generate are accepted, and including both `database-fragment` and `database-field` works.
+
+---
+
 ### 4. Known Limitations
-1. **Wayland Support:** Standard PyQt clipboard monitors can fail to read/write under strict Wayland policies. The current version expects an X11 session or XWayland fallback.
+1. **Wayland Support:** Standard PyQt clipboard monitors can fail to read/write under strict Wayland policies. The Linux daemon (`daemon.py`) expects an X11 session or XWayland fallback. (The Windows daemon is unaffected — it uses the native Win32 clipboard.)
+1b. **Slite-on-Windows paste unverified:** The Windows payload, format name, and end-to-end auto-conversion are verified (Section 6.4), but an actual paste into the Slite Windows desktop app has not been confirmed on the build machine (Slite was not installed). Run `dump_clipboard_win.py` against a real Slite copy to validate the schema if a paste ever misbehaves.
 2. **Notion Incompatibility:** As detailed in Section 2, Notion does not support simple HTML or SlateJS AST clipboard injection.
 3. **Partial Delimiters:** If a user copies text with a single open `$$` but no matching closing pair, it will either fail to match or parse incorrectly.
-4. **Table Formatting:** While the HTML compiler handles basic tables, the conversion from HTML tables to Slite's custom Table SlateJS AST has not been implemented (tables will currently fall back to unstyled paragraphs or code blocks).
+4. **Mixed-content tables flatten to paragraphs.** A *single-table* copy now pastes as a native, editable Slite database table (Section 7, verified). But because a Slite database is a standalone payload that can't be embedded inline with other blocks, a table copied *together with* surrounding headings/prose is flattened to `unstyled` paragraph rows (cells joined by `|`, header bold, inline math preserved) — readable and safe, but not an editable table. Copy the table on its own to get a native table.
 
 ---
 
 ### 5. Future Expansion & Next Steps
 If you or another developer want to improve this project further, consider these tasks:
 
-#### Task 1: Implement Table AST Mapping
-* **Goal:** Support Markdown tables (`| Col 1 | Col 2 |`) by mapping them to Slite's native Table AST components rather than letting them collapse into unstyled text.
-* **Pointers:** Inspect a copied Slite table payload using `dump_electron.py` to identify the Table, Table Row, and Table Cell schemas.
+#### Task 1: Native database tables — ✅ DONE (single-table copies)
+* Implemented in `compiler._build_table_database` and **verified** by a live Slite paste on Windows (Section 7). Single-table copies become real editable Slite tables with inline math; `createdBy`/`updatedBy` proved unnecessary.
+* **Remaining nice-to-have:** native tables for *mixed* content (heading + table + prose) are not possible inline because a database is a standalone payload — those still use the flattened-paragraph fallback. No known workaround within Slite's clipboard format.
 
 #### Task 2: Integrate Mermaid.js Diagrams
 * **Goal:** Automatically compile ` ```mermaid ` blocks into Slite's native Diagram AST components.
